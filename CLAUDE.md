@@ -37,25 +37,32 @@ tests/
     login_validation.spec.ts
   user/
     happy_path.spec.ts      — ГОЛОВНИЙ ТЕСТ: повний флоу від реєстрації до signing queue
+    register.spec.ts        — МОДУЛЬ РЕЄСТРАЦІЇ: 45 тестів (Basic/Email/Resend/Cases)
     smoke.spec.ts
     login_validation.spec.ts
 
 utils/
   otp-helpers.ts            — generateTOTPCode(base32Secret) — сумісно з pyotp/RFC 6238
-  db-helpers.ts             — verifyUserEmail(), fundAccountWithTestEth()
+  db-helpers.ts             — verifyUserEmail(), fundAccountWithTestEth(),
+                              getVerificationToken(email), isEmailVerified(email)
   date-format.ts
   math-helpers.ts
 ```
 
 ## Запуск
 ```bash
-npx playwright test --project=happy-path          # головний E2E флоу
-npx playwright test --project=user-chromium       # юзерські тести (потребує user-setup)
-npx playwright test --project=admin-chromium      # адмін тести (потребує setup)
-npx playwright test --ui                          # інтерактивний UI Mode
-npx playwright test --project=happy-path --headed # з видимим браузером
-npx playwright show-report                        # HTML звіт
+npx playwright test --project=happy-path                             # головний E2E флоу
+npx playwright test --project=user-chromium                          # юзерські тести (потребує user-setup)
+npx playwright test tests/user/register.spec.ts --project=user-chromium --workers=1  # модуль реєстрації (одне вікно)
+npx playwright test --project=admin-chromium                         # адмін тести (потребує setup)
+npx playwright test --ui --ui-host=localhost                         # інтерактивний UI Mode
+npx playwright test --project=happy-path --headed                    # з видимим браузером
+npx playwright show-report                                           # HTML звіт
 ```
+
+### Чому --workers=1 для register.spec.ts
+Тести реєстрації в середині кожного describe вже серіальні (`mode: 'serial'`).
+`--workers=1` гарантує що і між describe-групами одночасно відкрите тільки одне вікно.
 
 ## Конфігурація (.env — не в git)
 ```
@@ -74,6 +81,12 @@ USER_PASSWORD=ad99bSZfu22!
 - Email верифікація обходиться через пряме оновлення БД (`verifyUserEmail()`)
 - Баланс для тестів: `fundAccountWithTestEth(address)` → `UPDATE onchain_balances`
 - ETH Sepolia asset_id: `2745a97c-2201-52f5-b41e-dfb933bea3b5`
+- Токен верифікації email: генерується через app-контейнер (`getVerificationToken(email)`)
+  - Алгоритм: `itsdangerous URLSafeTimedSerializer(secret_key, salt='email-verification').dumps({'uid': user_id})`
+  - URL: `/verify-email?token=TOKEN`
+  - Success message: `'Email verified successfully! You can now log in.'`
+  - Успіх → рендер login-сторінки з `success` флагом (не redirect, URL = /verify-email)
+  - DB колонки: `email_verified` (bool), `email_verified_at`, `verification_reminder_stage`
 
 ## Особливості UI (критично для локаторів)
 

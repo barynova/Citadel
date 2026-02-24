@@ -1,5 +1,7 @@
 import { execSync } from 'child_process';
 
+const APP_CONTAINER = 'core-app-1';
+
 // Назва Docker-контейнера з PostgreSQL (з docker-compose.yml: container_name: custody-postgres)
 const DB_CONTAINER = 'custody-postgres';
 const DB_USER = 'user';
@@ -50,4 +52,62 @@ export function fundAccountWithTestEth(address: string, ethAmount: number = 1): 
     `docker exec ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} -c "${query}"`,
     { stdio: 'pipe' },
   );
+}
+
+/**
+ * Генерує токен верифікації email для конкретного користувача.
+ *
+ * Алгоритм:
+ *  1. Дістаємо user.id (UUID) з PostgreSQL за email
+ *  2. Генеруємо підписаний токен через app-контейнер (itsdangerous URLSafeTimedSerializer)
+ *     — той самий алгоритм що й у продакшні (secret_key + salt 'email-verification')
+ *
+ * URL верифікації: /verify-email?token=<TOKEN>
+ *
+ * @param email - Email адреса зареєстрованого (невірифікованого) користувача
+ */
+export function getVerificationToken(email: string): string {
+  const safeEmail = email.replace(/'/g, "''");
+
+  const userId = execSync(
+    `docker exec ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} -t -A -c "SELECT id FROM users WHERE email = '${safeEmail}';"`,
+    { stdio: 'pipe' },
+  )
+    .toString()
+    .trim();
+
+  if (!userId) throw new Error(`User not found in DB for email: ${email}`);
+
+  // Генеруємо токен через Python всередині app-контейнера (читає SECRET_KEY з env)
+  const token = execSync(
+    `docker exec ${APP_CONTAINER} python3 -c "` +
+      `from itsdangerous import URLSafeTimedSerializer; ` +
+      `import os; ` +
+      `s = URLSafeTimedSerializer(secret_key=os.environ.get('SECRET_KEY', ''), salt='email-verification'); ` +
+      `print(s.dumps({'uid': '${userId}'}))"`,
+    { stdio: 'pipe' },
+  )
+    .toString()
+    .trim();
+
+  return token;
+}
+
+/**
+ * Перевіряє чи email користувача верифіковано в БД.
+ * Повертає true якщо email_verified = true.
+ *
+ * @param email - Email адреса користувача
+ */
+export function isEmailVerified(email: string): boolean {
+  const safeEmail = email.replace(/'/g, "''");
+
+  const result = execSync(
+    `docker exec ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} -t -A -c "SELECT email_verified FROM users WHERE email = '${safeEmail}';"`,
+    { stdio: 'pipe' },
+  )
+    .toString()
+    .trim();
+
+  return result === 't';
 }
