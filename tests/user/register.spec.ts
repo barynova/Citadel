@@ -43,10 +43,11 @@ test.describe('Basic Checks', () => {
       // Форма не сабмітилась — залишаємось на /register
       await expect(page).toHaveURL(/register/);
 
-      // Кнопка залишається задизейблена або браузер показує native validation
-      const createBtn = page.getByRole('button', { name: /Create Account/i });
-      const isStillOnRegister = page.url().includes('register');
-      expect(isStillOnRegister).toBe(true);
+      // Браузер встановив повідомлення про помилку на першому required полі (username)
+      const validationMessage = await page
+        .locator('input[name="username"]')
+        .evaluate((el: HTMLInputElement) => el.validationMessage);
+      expect(validationMessage).not.toBe('');
     },
   );
 
@@ -213,7 +214,9 @@ test.describe('Check Email activation/verification', () => {
       await page.locator('input[name="password"]').fill(testUser.password);
       await page.getByRole('button', { name: /Sign In/i }).click();
 
-      await expect(page).not.toHaveURL(/login/, { timeout: 10_000 });
+      // Після першого логіну після верифікації — редирект на /settings (2FA setup)
+      // ❌ Якщо редирект веде кудись інше або залишається /login — тест впаде
+      await expect(page).toHaveURL(/settings/, { timeout: 10_000 });
     },
   );
 
@@ -480,6 +483,231 @@ test.describe('Check Resend Verification Email', () => {
     'Register: after clicking "Resend verification email": new token is valid, old token remains valid until expiration',
     async () => {
       // TODO: потребує email-провайдера для отримання нового токену
+    },
+  );
+});
+
+test.describe('Cases', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('register');
+  });
+
+  test(
+    'Register: Link to "Terms of Service" and "Privacy Policy" is accessible and leads to the correct pages.',
+    async ({ page }) => {
+      const termsLink = page.getByRole('link', { name: /Terms of Service/i });
+      const privacyLink = page.getByRole('link', { name: /Privacy Policy/i });
+
+      await expect(termsLink).toBeVisible();
+      await expect(privacyLink).toBeVisible();
+
+      // Посилання мають вести на реальні сторінки, а не "#"
+      // ❌ Наразі обидва href="#" — тест впаде і покаже баг
+      const termsHref = await termsLink.getAttribute('href');
+      const privacyHref = await privacyLink.getAttribute('href');
+      expect(termsHref).not.toBe('#');
+      expect(privacyHref).not.toBe('#');
+    },
+  );
+
+  test(
+    'Register: Attempt to create an account with a username that is less than 3 characters long and verify that an error message is displayed.',
+    async ({ page }) => {
+      const usernameInput = page.locator('input[name="username"]');
+      await usernameInput.fill('ab');
+
+      // Перевіряємо що браузер встановив повідомлення про помилку (minlength="3")
+      const validationMessage = await usernameInput.evaluate(
+        (el: HTMLInputElement) => el.validationMessage,
+      );
+      expect(validationMessage).not.toBe('');
+
+      // Форма не сабмітиться — залишаємось на /register
+      await page.locator('input[name="email"]').fill('test@example.com');
+      await page.locator('input[name="password"]').fill('TestPass123!');
+      await page.locator('input[name="confirm_password"]').fill('TestPass123!');
+      await page.locator('input[name="terms"]').check();
+      await page.getByRole('button', { name: /Create Account/i }).click();
+      await expect(page).toHaveURL(/register/);
+    },
+  );
+
+  test(
+    'Register: Try using an invalid email format and check that the form does not submit and an appropriate error message is shown.',
+    async ({ page }) => {
+      const emailInput = page.locator('input[name="email"]');
+      await emailInput.fill('notanemail');
+
+      // Перевіряємо що браузер встановив повідомлення про помилку (type="email")
+      const validationMessage = await emailInput.evaluate(
+        (el: HTMLInputElement) => el.validationMessage,
+      );
+      expect(validationMessage).not.toBe('');
+
+      // Форма не сабмітиться
+      await page.locator('input[name="username"]').fill('validuser');
+      await page.locator('input[name="password"]').fill('TestPass123!');
+      await page.locator('input[name="confirm_password"]').fill('TestPass123!');
+      await page.locator('input[name="terms"]').check();
+      await page.getByRole('button', { name: /Create Account/i }).click();
+      await expect(page).toHaveURL(/register/);
+    },
+  );
+
+  test(
+    'Register: Enter a password that is shorter than 8 characters and ensure that the system does not allow account creation.',
+    async ({ page }) => {
+      const passwordInput = page.locator('input[name="password"]');
+      await passwordInput.fill('Short1!');
+
+      // Перевіряємо що браузер встановив повідомлення про помилку (minlength="8")
+      const validationMessage = await passwordInput.evaluate(
+        (el: HTMLInputElement) => el.validationMessage,
+      );
+      expect(validationMessage).not.toBe('');
+
+      // Паролі співпадають (кнопка активна) — але форма не сабмітиться
+      await page.locator('input[name="username"]').fill('validuser');
+      await page.locator('input[name="email"]').fill('test@example.com');
+      await page.locator('input[name="confirm_password"]').fill('Short1!');
+      await page.locator('input[name="terms"]').check();
+      await page.getByRole('button', { name: /Create Account/i }).click();
+      await expect(page).toHaveURL(/register/);
+    },
+  );
+
+  test(
+    "Register: Input a password and a different confirm password, then verify that an error message indicating \"Passwords don't match\" is displayed.",
+    async ({ page }) => {
+      const registerPage = new RegisterPage(page);
+      await registerPage.fillPassword('TestPass123!');
+      await registerPage.fillConfirmPassword('DifferentPass456!');
+
+      // Alpine x-show показує DOM-повідомлення "Passwords don't match"
+      await expect(page.getByText("Passwords don't match")).toBeVisible();
+    },
+  );
+
+  test(
+    'Register: Leave the terms and conditions checkbox unchecked and attempt to submit the form to confirm that an error is raised.',
+    async ({ page }) => {
+      const suffix = faker.string.numeric(6);
+      const registerPage = new RegisterPage(page);
+
+      await registerPage.fillUsername(`user_${suffix}`);
+      await registerPage.fillEmail(faker.internet.email().toLowerCase());
+      await registerPage.fillPassword('TestPass123!');
+      await registerPage.fillConfirmPassword('TestPass123!');
+      // terms НЕ чекаємо
+
+      await page.getByRole('button', { name: /Create Account/i }).click();
+
+      // Форма не сабмітиться
+      await expect(page).toHaveURL(/register/);
+
+      // Браузер встановив повідомлення про помилку на checkbox (required)
+      const validationMessage = await page
+        .locator('input[name="terms"]')
+        .evaluate((el: HTMLInputElement) => el.validationMessage);
+      expect(validationMessage).not.toBe('');
+    },
+  );
+
+  test(
+    'Register: Test the account creation process using a variety of special characters in the username and password fields to ensure the system handles them correctly.',
+    async ({ page }) => {
+      const suffix = faker.string.numeric(6);
+      const registerPage = new RegisterPage(page);
+
+      const specialUsername = `user_${suffix}-test.ok`;
+      const specialPassword = 'P@$$w0rd!#123';
+
+      await registerPage.register(
+        specialUsername,
+        faker.internet.email().toLowerCase(),
+        specialPassword,
+      );
+
+      await expect(page).toHaveURL(/verify-email-sent/, { timeout: 10_000 });
+    },
+  );
+
+  test(
+    'Register: Check how the form behaves when a user rapidly switches between showing and hiding the password fields.',
+    async ({ page }) => {
+      const passwordInput = page.locator('input[name="password"]');
+      const toggleBtn = page.locator('div.relative:has(input[name="password"]) button');
+
+      await passwordInput.fill('TestPass123!');
+
+      // Початково: type="password"
+      await expect(passwordInput).toHaveAttribute('type', 'password');
+
+      // 5 швидких кліків
+      for (let i = 0; i < 5; i++) {
+        await toggleBtn.click();
+      }
+
+      // Після непарної кількості кліків → type="text"
+      await expect(passwordInput).toHaveAttribute('type', 'text');
+
+      // Значення пароля збережене
+      await expect(passwordInput).toHaveValue('TestPass123!');
+    },
+  );
+
+  test(
+    'Register: Simulate a slow network connection and see if the system provides feedback during the account creation process.',
+    async ({ page }) => {
+      const user = generateUser();
+
+      // Додаємо 3с затримку до POST /register
+      await page.route('**/register', async (route) => {
+        if (route.request().method() === 'POST') {
+          await new Promise((r) => setTimeout(r, 3_000));
+        }
+        await route.continue();
+      });
+
+      const registerPage = new RegisterPage(page);
+      await registerPage.fillUsername(user.username);
+      await registerPage.fillEmail(user.email);
+      await registerPage.fillPassword(user.password);
+      await registerPage.fillConfirmPassword(user.password);
+      await registerPage.checkTerms();
+
+      // Клікаємо submit — запит "в польоті" (3с затримка)
+      await registerPage.clickCreateAccount();
+
+      // Під час очікування відповіді кнопка має бути задизейблена (loading state)
+      // ❌ В поточному UI немає loading state — тест впаде і покаже баг
+      await expect(
+        page.getByRole('button', { name: /Create Account/i }),
+      ).toBeDisabled({ timeout: 1_000 });
+    },
+  );
+
+  test(
+    "Register: Test the form's responsiveness by resizing the browser window and checking if all elements adjust correctly without losing functionality.",
+    async ({ page }) => {
+      const checkFormVisible = async () => {
+        await expect(page.locator('input[name="username"]')).toBeVisible();
+        await expect(page.locator('input[name="email"]')).toBeVisible();
+        await expect(page.locator('input[name="password"]')).toBeVisible();
+        await expect(page.getByRole('button', { name: /Create Account/i })).toBeVisible();
+      };
+
+      // Mobile 375×667
+      await page.setViewportSize({ width: 375, height: 667 });
+      await checkFormVisible();
+
+      // Tablet 768×1024
+      await page.setViewportSize({ width: 768, height: 1024 });
+      await checkFormVisible();
+
+      // Desktop 1280×800
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await checkFormVisible();
     },
   );
 });
