@@ -3,7 +3,7 @@
  * Тести додаються по одному, кожен узгоджується перед запуском.
  */
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { faker } from '@faker-js/faker';
 import { RegisterPage } from '../../page-objects/user/RegisterPage';
 import { getVerificationToken, isEmailVerified } from '../../utils/db-helpers';
@@ -377,21 +377,11 @@ test.describe('Check Email activation/verification', () => {
   });
 });
 
-/** Скидає Alpine.js cooldown до 0 і чекає поки кнопка Resend стане активною */
-async function resetResendCooldown(page: Page) {
-  await page.evaluate(() => {
-    const el = document.querySelector('[x-data]') as any;
-    el._x_dataStack[0].cooldown = 0;
-  });
-  await page.waitForFunction(() => {
-    const buttons = Array.from(document.querySelectorAll('button'));
-    const btn = buttons.find((b) => b.textContent?.trim() === 'Resend verification email');
-    return btn && !(btn as HTMLButtonElement).disabled;
-  }, { timeout: 3_000 });
-}
-
 test.describe('Check Resend Verification Email', () => {
   test.beforeEach(async ({ page }) => {
+    // Встановлюємо fake timers ДО того як Alpine запустить startCooldown() → setInterval
+    await page.clock.install();
+
     const user = generateUser();
     const registerPage = new RegisterPage(page);
     await page.goto('register');
@@ -440,7 +430,9 @@ test.describe('Check Resend Verification Email', () => {
   test(
     'Register: after clicking "Resend verification email": success message "Verification email sent!" is visible',
     async ({ page }) => {
-      await resetResendCooldown(page);
+      // Перемотуємо 61с → cooldown спливає → кнопка активна
+      await page.clock.runFor(61_000);
+      await expect(page.getByRole('button', { name: /Resend verification email/i })).toBeEnabled({ timeout: 3_000 });
       await page.getByRole('button', { name: /Resend verification email/i }).click();
       await expect(page.getByText('Verification email sent!')).toBeVisible({ timeout: 5_000 });
     },
@@ -458,7 +450,9 @@ test.describe('Check Resend Verification Email', () => {
   test(
     'Register: after clicking "Resend verification email": countdown timer "You can request another email in X minutes" is visible',
     async ({ page }) => {
-      await resetResendCooldown(page);
+      // Перемотуємо 61с → кнопка активна, клікаємо → cooldown скидається до 60
+      await page.clock.runFor(61_000);
+      await expect(page.getByRole('button', { name: /Resend verification email/i })).toBeEnabled({ timeout: 3_000 });
       await page.getByRole('button', { name: /Resend verification email/i }).click();
       await expect(page.getByText(/You can request another email in/i)).toBeVisible({ timeout: 5_000 });
     },
@@ -467,8 +461,8 @@ test.describe('Check Resend Verification Email', () => {
   test(
     'Register: countdown timer "You can request another email in" is not visible when cooldown is 0',
     async ({ page }) => {
-      // Скидаємо cooldown → x-show="cooldown > 0" ховає таймер
-      await resetResendCooldown(page);
+      // Перемотуємо 61с → cooldown = 0 → x-show="cooldown > 0" ховає таймер
+      await page.clock.runFor(61_000);
       await expect(page.getByText(/You can request another email in/i)).not.toBeVisible();
     },
   );
