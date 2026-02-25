@@ -156,18 +156,13 @@ test.describe('OTP Login flow', () => {
         page.locator('h3', { hasText: 'Two-Factor Authentication' }),
       ).toBeVisible({ timeout: 5_000 });
 
-      // Доступ обмежений — спроба зайти на /accounts повинна показати 2FA-модалку
-      // або блокувати доступ (бо 2FA не підтверджена через код)
-      // ❌ Якщо /accounts відкривається без будь-яких обмежень — це баг (bypass 2FA)
+      // Доступ обмежений — спроба перейти на /accounts редиректить назад на /settings
+      // (клік по будь-якій вкладці залишає юзера в settings)
+      // ❌ Якщо /accounts дійсно відкривається — bypass 2FA → баг
       await page.goto('accounts');
       await page.waitForTimeout(1_000);
-      const onAccounts = await page.url();
-      const has2FAPrompt = await page.getByText(/Secure Your Account/i).isVisible().catch(() => false);
-      const blockedToLogin = onAccounts.includes('login');
 
-      // Один із двох варіантів: або 2FA prompt, або редирект на login
-      // ❌ Якщо жодного — доступ до accounts без 2FA → баг
-      expect(has2FAPrompt || blockedToLogin).toBe(true);
+      await expect(page).not.toHaveURL(/accounts/, { timeout: 5_000 });
     },
   );
 });
