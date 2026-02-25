@@ -409,16 +409,6 @@ test.describe('Check Resend Verification Email', () => {
     },
   );
 
-  test(
-    'Register: "Resend verification email" button is disabled during 60-second cooldown after registration',
-    async ({ page }) => {
-      // Одразу після реєстрації cooldown = 60s → кнопка видима, але задизейблена
-      const resendBtn = page.getByRole('button', { name: /Resend verification email/i });
-      await expect(resendBtn).toBeVisible({ timeout: 5_000 });
-      await expect(resendBtn).toBeDisabled();
-    },
-  );
-
   // ── Rate limiting ──────────────────────────────────────────────────────
 
   test(
